@@ -3,6 +3,7 @@ const path = require('path');
 const QRCode = require('qrcode');
 
 const configPath = process.env.WG_CONFIG_PATH || './data/wg0.conf';
+const dbPath = process.env.DB_PATH || './data/database.sqlite';
 
 /**
  * Sinh nội dung file cấu hình WireGuard cho Client.
@@ -10,7 +11,7 @@ const configPath = process.env.WG_CONFIG_PATH || './data/wg0.conf';
  * @returns {string} Nội dung file .conf
  */
 function generateClientConfig(peer) {
-  const dataDir = path.dirname(configPath);
+  const dataDir = path.dirname(dbPath);
   const serverKeyPath = path.join(dataDir, 'server_keys.json');
   let serverPublicKey = '';
   

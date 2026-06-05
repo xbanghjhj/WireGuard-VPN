@@ -5,6 +5,7 @@ const db = require('../db/database');
 
 const isMock = process.env.MOCK_WIREGUARD === 'true';
 const configPath = process.env.WG_CONFIG_PATH || './data/wg0.conf';
+const dbPath = process.env.DB_PATH || './data/database.sqlite';
 const wgInterface = process.env.WG_INTERFACE || 'wg0';
 
 /**
@@ -16,7 +17,7 @@ async function syncWireGuardConfig() {
     console.log('Syncing WireGuard configuration...');
     
     // 1. Lấy thông tin server keys
-    const dataDir = path.dirname(configPath);
+    const dataDir = path.dirname(dbPath);
     const serverKeyPath = path.join(dataDir, 'server_keys.json');
     let serverPrivateKey = '';
     
