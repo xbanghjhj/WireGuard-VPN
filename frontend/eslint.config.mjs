@@ -5,6 +5,16 @@ export default defineConfig([
   ...nextVitals,
   globalIgnores(['.next/**', 'coverage/**', 'out/**']),
   {
+    files: ['**/*.{js,jsx}'],
+    rules: {
+      'no-unused-vars': ['error', {
+        argsIgnorePattern: '^_',
+        caughtErrors: 'all',
+        caughtErrorsIgnorePattern: '^_'
+      }]
+    }
+  },
+  {
     files: ['**/*.test.js', 'jest.setup.js'],
     languageOptions: {
       globals: {

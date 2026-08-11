@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef } from 'react';
+import { useEffect, useState } from 'react';
 import { io } from 'socket.io-client';
 import { getToken, isAuthenticated, clearSession } from '../lib/auth';
 
@@ -7,8 +7,6 @@ const WS_URL = process.env.NEXT_PUBLIC_WS_URL || 'http://localhost:3000';
 export default function useWebSocket() {
   const [stats, setStats] = useState(null);
   const [isConnected, setIsConnected] = useState(false);
-  const socketRef = useRef(null);
-
   useEffect(() => {
     if (!isAuthenticated()) return;
 
@@ -21,8 +19,6 @@ export default function useWebSocket() {
       reconnectionAttempts: 5,
       reconnectionDelay: 1000
     });
-
-    socketRef.current = socket;
 
     socket.on('connect', () => {
       console.log('WebSocket connected to backend.');

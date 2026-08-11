@@ -82,12 +82,6 @@ body {
   }
 }
 
-@keyframes progressWidth {
-  from {
-    width: 0%;
-  }
-}
-
 /* Utility Classes for Custom Animations */
 .animate-float-slow {
   animation: float 6s ease-in-out infinite;
@@ -127,18 +121,6 @@ body {
   background: rgba(255, 255, 255, 0.85);
   border-color: rgba(125, 211, 252, 0.8); /* Sky 300 */
   box-shadow: 0 12px 40px 0 rgba(2, 132, 199, 0.12);
-}
-
-.glass-input {
-  background: rgba(255, 255, 255, 0.5);
-  border: 1px solid rgba(2, 132, 199, 0.15);
-  transition: all 0.3s ease;
-}
-
-.glass-input:focus {
-  background: rgba(255, 255, 255, 0.85);
-  border-color: #0284c7; /* Sky 600 */
-  box-shadow: 0 0 0 4px rgba(2, 132, 199, 0.15);
 }
 
 /* Neon glow for sky blue theme */
