@@ -3,7 +3,7 @@
 > Hệ thống quản lý VPN doanh nghiệp hiện đại — cấp phát, giám sát và điều phối kết nối WireGuard qua giao diện Web trực quan.
 
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
-![Node](https://img.shields.io/badge/node-%3E%3D18.0.0-green.svg)
+![Node](https://img.shields.io/badge/node-22-green.svg)
 ![WireGuard](https://img.shields.io/badge/WireGuard-v1.0%2B-orange.svg)
 ![Platform](https://img.shields.io/badge/platform-Linux-lightgrey.svg)
 
@@ -39,7 +39,7 @@
 - Tạo file cấu hình `.conf` và mã QR để kết nối từ điện thoại
 - Kiểm soát quyền truy cập mạng nội bộ qua Firewall/iptables
 
-WireGuard được chọn vì đây là giao thức VPN **nhanh nhất, bảo mật nhất** hiện nay — sử dụng mã hóa ChaCha20, Poly1305, Curve25519 — vượt trội hoàn toàn so với OpenVPN hay IPSec cũ kỹ.
+WireGuard được chọn vì có thiết kế gọn, hiệu năng tốt và sử dụng các primitive hiện đại như ChaCha20, Poly1305 và Curve25519. Mức độ an toàn thực tế vẫn phụ thuộc vào quản lý khóa, phân quyền, cấu hình mạng và quy trình vận hành.
 
 ---
 
@@ -57,7 +57,7 @@ WireGuard được chọn vì đây là giao thức VPN **nhanh nhất, bảo m�
 │                    VPN SERVER (Linux)                           │
 │  ┌──────────────────────────────────────────────────────────┐   │
 │  │              WireGuard Kernel Module                      │   │
-│  │         Interface: wg0 (10.0.0.1/24)                     │   │
+│  │         Interface: wg0 (10.99.0.1/24)                     │   │
 │  └──────────────────────┬───────────────────────────────────┘   │
 │                          │                                       │
 │  ┌──────────────────────▼───────────────────────────────────┐   │
@@ -91,7 +91,7 @@ WireGuard được chọn vì đây là giao thức VPN **nhanh nhất, bảo m�
 - ✅ Bật/tắt peer không cần xóa cấu hình
 - ✅ Xuất file `.conf` để import vào WireGuard client
 - ✅ Tạo mã QR để kết nối từ điện thoại (Android/iOS)
-- ✅ Đặt giới hạn băng thông cho từng peer
+- 🗺️ Giới hạn băng thông cho từng peer — roadmap, chưa triển khai
 
 ### Giám sát Real-time
 - ✅ Danh sách peer đang kết nối (online/offline)
@@ -103,14 +103,14 @@ WireGuard được chọn vì đây là giao thức VPN **nhanh nhất, bảo m�
 ### Bảo mật & Kiểm soát truy cập
 - ✅ Phân quyền Admin / Viewer
 - ✅ JWT Authentication cho Dashboard
-- ✅ Tích hợp iptables để chặn/cho phép peer truy cập internet
+- ✅ Gỡ peer khỏi WireGuard runtime khi disable; iptables DROP chỉ là lớp bổ sung
 - ✅ Rate limiting API
 
 ### Tiện ích
 - ✅ Cấu hình DNS tùy chỉnh cho từng peer
 - ✅ Hỗ trợ Split Tunneling (chỉ route một phần traffic qua VPN)
-- ✅ Export danh sách peer ra CSV
-- ✅ Backup & Restore cấu hình WireGuard
+- 🗺️ Export danh sách peer ra CSV — roadmap, chưa triển khai
+- 🗺️ Backup & Restore cấu hình WireGuard — roadmap, chưa triển khai
 
 ---
 
@@ -119,16 +119,16 @@ WireGuard được chọn vì đây là giao thức VPN **nhanh nhất, bảo m�
 | Tầng | Công nghệ | Mục đích |
 |------|-----------|----------|
 | **VPN Core** | WireGuard + wg-tools | Giao thức VPN, quản lý interface |
-| **Backend** | Node.js 18+ / Express.js | REST API server |
-| **Process** | `child_process` / `execa` | Gọi lệnh WireGuard CLI |
+| **Backend** | Node.js 22 / Express.js | REST API server |
+| **Process** | `child_process.spawn` | Gọi lệnh WireGuard CLI bằng file + danh sách argument |
 | **Real-time** | Socket.IO (WebSocket) | Đẩy bandwidth data live |
-| **Frontend** | Next.js 14 + React 18 | Web Dashboard |
+| **Frontend** | Next.js 16 + React 19 | Web Dashboard |
 | **Styling** | TailwindCSS v3 | UI components |
 | **Charts** | Chart.js + react-chartjs-2 | Biểu đồ lưu lượng |
 | **QR Code** | `qrcode` npm package | Tạo mã QR cấu hình |
 | **Auth** | JWT + bcrypt | Xác thực người dùng |
-| **Database** | SQLite (better-sqlite3) | Lưu trữ peer metadata |
-| **Config** | dotenv | Biến môi trường |
+| **Database** | SQLite (`sqlite3`) | Migration, peer metadata, audit log |
+| **Config** | dotenv + Zod | Biến môi trường và validation tập trung |
 | **Firewall** | iptables / nftables | Kiểm soát truy cập mạng |
 
 ---
@@ -139,8 +139,8 @@ WireGuard được chọn vì đây là giao thức VPN **nhanh nhất, bảo m�
 - **OS**: Ubuntu 20.04+ / Debian 11+ / CentOS Stream 9+
 - **CPU**: 1 vCPU (tối thiểu), 2 vCPU (khuyến nghị)
 - **RAM**: 512MB (tối thiểu), 1GB (khuyến nghị)
-- **Quyền**: `root` hoặc `sudo` (cần thiết để quản lý WireGuard interface)
-- **Node.js**: v18.0.0 trở lên
+- **Quyền**: backend chạy bằng service account riêng; cấp quyền giới hạn qua systemd capability hoặc privileged helper đã review
+- **Node.js**: v22.x
 - **WireGuard**: v1.0+
 
 ### Client (truy cập Dashboard)
@@ -177,16 +177,16 @@ sudo sysctl -p
 ### Bước 3: Clone & Cài đặt dự án
 
 ```bash
-git clone https://github.com/your-username/wireguard-dashboard.git
-cd wireguard-dashboard
+git clone https://github.com/xbanghjhj/WireGuard-VPN.git
+cd WireGuard-VPN
 
 # Cài đặt dependencies cho Backend
 cd backend
-npm install
+npm ci
 
 # Cài đặt dependencies cho Frontend
 cd ../frontend
-npm install
+npm ci
 ```
 
 ### Bước 4: Cấu hình môi trường
@@ -207,14 +207,15 @@ Xem chi tiết tại phần [Biến môi trường](#-biến-môi-trường).
 ```bash
 # Script tự động tạo server keys và cấu hình ban đầu
 cd backend
-sudo npm run setup:wireguard
+npm run setup:wireguard                  # tạo/kiểm tra, không start interface
+npm run setup:wireguard -- --apply       # chỉ apply sau khi đã review
 ```
 
 Script này sẽ:
-1. Tạo cặp key server (public/private)
-2. Tạo file `/etc/wireguard/wg0.conf`
-3. Khởi động interface `wg0`
-4. Cấu hình iptables rules cơ bản
+1. Kiểm tra real/mock mode và tạo server key riêng nếu chưa có
+2. Tạo, validate và đặt mode `0600` cho cấu hình WireGuard
+3. Kiểm tra `net.ipv4.ip_forward` và tạo Admin theo cách idempotent
+4. Không tự sửa firewall; chỉ `--apply` mới yêu cầu khởi động/đồng bộ interface
 
 ### Bước 6: Khởi chạy
 
@@ -231,8 +232,8 @@ cd frontend && npm run dev
 # Production mode (dùng PM2)
 npm install -g pm2
 
-cd backend && pm2 start ecosystem.config.js
-cd frontend && npm run build && pm2 start ecosystem.config.js
+cd frontend && npm run build && cd ..
+pm2 start ecosystem.config.js
 ```
 
 Truy cập Dashboard tại: `http://localhost:3001`
@@ -242,77 +243,49 @@ Truy cập Dashboard tại: `http://localhost:3001`
 ## 📁 Cấu trúc thư mục
 
 ```
-wireguard-dashboard/
+WireGuard-VPN/
 ├── backend/
 │   ├── src/
+│   │   ├── config/env.js
 │   │   ├── controllers/
-│   │   │   ├── peerController.js     # CRUD operations cho peers
-│   │   │   ├── statsController.js    # Thu thập bandwidth stats
-│   │   │   └── authController.js     # Đăng nhập / JWT
-│   │   ├── services/
-│   │   │   ├── wireguardService.js   # Wrapper gọi lệnh wg/wg-quick
-│   │   │   ├── keyService.js         # Sinh public/private keypairs
-│   │   │   ├── qrService.js          # Tạo mã QR từ config
-│   │   │   ├── iptablesService.js    # Quản lý iptables rules
-│   │   │   └── statsService.js       # Parse `wg show` output
-│   │   ├── routes/
-│   │   │   ├── peers.js              # /api/peers CRUD
-│   │   │   ├── stats.js              # /api/stats
-│   │   │   └── auth.js               # /api/auth
-│   │   ├── websocket/
-│   │   │   └── bandwidthSocket.js    # Socket.IO emitter (interval push)
-│   │   ├── db/
-│   │   │   ├── database.js           # SQLite connection
-│   │   │   └── schema.sql            # Định nghĩa bảng
+│   │   │   ├── authController.js
+│   │   │   ├── peerController.js
+│   │   │   └── statsController.js
+│   │   ├── db/database.js
 │   │   ├── middleware/
-│   │   │   ├── auth.js               # JWT verify middleware
-│   │   │   └── rateLimiter.js        # Rate limiting
-│   │   └── app.js                    # Express app entry point
-│   ├── scripts/
-│   │   └── setup-wireguard.sh        # Script khởi tạo WireGuard
-│   ├── .env.example
-│   ├── ecosystem.config.js           # PM2 config
-│   └── package.json
-│
+│   │   ├── routes/
+│   │   ├── services/
+│   │   │   ├── ipAllocatorService.js
+│   │   │   ├── keyService.js
+│   │   │   ├── peerKeyCryptoService.js
+│   │   │   ├── statsService.js
+│   │   │   └── wireguardService.js
+│   │   ├── websocket/bandwidthSocket.js
+│   │   └── app.js
+│   ├── scripts/setup-wireguard.js
+│   ├── test/
+│   └── .env.example
 ├── frontend/
-│   ├── src/
-│   │   ├── app/                      # Next.js App Router
-│   │   │   ├── dashboard/
-│   │   │   │   └── page.jsx          # Trang Dashboard chính
-│   │   │   ├── peers/
-│   │   │   │   ├── page.jsx          # Danh sách Peers
-│   │   │   │   └── [id]/page.jsx     # Chi tiết từng Peer
-│   │   │   └── login/
-│   │   │       └── page.jsx          # Trang đăng nhập
-│   │   ├── components/
-│   │   │   ├── PeerList.jsx          # Bảng danh sách peers
-│   │   │   ├── PeerCard.jsx          # Card thông tin peer
-│   │   │   ├── BandwidthChart.jsx    # Biểu đồ Chart.js real-time
-│   │   │   ├── QRCodeModal.jsx       # Modal hiển thị QR Code
-│   │   │   ├── AddPeerModal.jsx      # Form thêm peer mới
-│   │   │   └── StatusBadge.jsx       # Badge online/offline
-│   │   ├── hooks/
-│   │   │   ├── useWebSocket.js       # Hook kết nối Socket.IO
-│   │   │   └── usePeers.js           # Hook fetch danh sách peers
-│   │   ├── lib/
-│   │   │   ├── api.js                # Axios instance + interceptors
-│   │   │   └── auth.js               # Token storage helpers
-│   │   └── styles/
-│   │       └── globals.css
-│   ├── .env.example
-│   └── package.json
-│
-├── docs/
-│   ├── architecture.md               # Tài liệu kiến trúc chi tiết
-│   ├── api.md                        # API documentation
-│   └── deployment.md                 # Hướng dẫn deploy
-│
-└── README.md
+│   ├── src/app/
+│   │   ├── dashboard/page.js
+│   │   └── login/page.js
+│   ├── src/components/
+│   │   ├── AddPeerModal.js
+│   │   ├── BandwidthChart.js
+│   │   └── QRCodeModal.js
+│   ├── src/hooks/
+│   ├── src/lib/
+│   └── .env.example
+├── deploy/
+├── docs/deployment.md
+├── .github/workflows/ci.yml
+└── ecosystem.config.js
 ```
 
 ---
 
 ## 📡 API Reference
+
 
 ### Authentication
 
@@ -335,12 +308,22 @@ GET    /api/peers/:id/config   — Tải file .conf
 GET    /api/peers/:id/qrcode   — Lấy QR code (base64 PNG)
 ```
 
+
+### Phân quyền và dữ liệu nhạy cảm
+
+| Chức năng | Admin | Viewer |
+| --- | :---: | :---: |
+| Login, Dashboard, danh sách/chi tiết peer an toàn | Có | Có |
+| Tạo, enable/disable, xóa peer | Có | Không |
+| Tải config hoặc xem QR | Có | Không |
+| Xem private key qua JSON/WebSocket | Không | Không |
+
+Danh sách, chi tiết và WebSocket chỉ dùng DTO an toàn. Private key peer được mã hóa AES-256-GCM trong SQLite và chỉ được giải mã tạm thời khi Admin yêu cầu config/QR. Peer cũ không có bản ghi mã hóa hoàn chỉnh được đánh dấu `needsReprovision`.
+
 ### Stats
 
 ```
 GET /api/stats                 — Tổng quan toàn hệ thống
-GET /api/stats/peers           — Bandwidth stats của tất cả peers
-GET /api/stats/peers/:id       — Bandwidth stats của một peer
 ```
 
 #### Ví dụ response — Tạo peer mới
@@ -350,7 +333,7 @@ GET /api/stats/peers/:id       — Bandwidth stats của một peer
   "id": "peer_abc123",
   "name": "Nguyen Van A - Laptop",
   "publicKey": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY=",
-  "allowedIPs": "10.0.0.5/32",
+  "allowedIPs": "10.99.0.2/32",
   "dns": "1.1.1.1, 8.8.8.8",
   "createdAt": "2025-06-04T10:00:00Z",
   "enabled": true
@@ -361,13 +344,13 @@ GET /api/stats/peers/:id       — Bandwidth stats của một peer
 
 ## 🔌 WebSocket Events
 
-Kết nối tới `ws://localhost:3000` với JWT token.
+Kết nối tới Socket.IO endpoint với JWT trong `auth: { token }`; query-string token không được chấp nhận.
 
 ### Server → Client (events lắng nghe)
 
 | Event | Payload | Mô tả |
 |-------|---------|-------|
-| `stats:update` | `{ peers: [...] }` | Bandwidth update mỗi 2 giây |
+| `stats:update` | `{ peers: [...] }` | Bandwidth update theo `STATS_INTERVAL` |
 | `peer:connected` | `{ peerId, endpoint }` | Peer vừa thiết lập handshake |
 | `peer:disconnected` | `{ peerId }` | Peer mất kết nối |
 
@@ -384,8 +367,8 @@ Kết nối tới `ws://localhost:3000` với JWT token.
       "endpoint": "203.0.113.10:51234",
       "rxBytes": 1048576,
       "txBytes": 524288,
-      "rxBytesFormatted": "1.00 MB",
-      "txBytesFormatted": "512 KB"
+      "rxFormatted": "1 MB",
+      "txFormatted": "512 KB"
     }
   ],
   "timestamp": "2025-06-04T10:05:32Z"
@@ -396,48 +379,51 @@ Kết nối tới `ws://localhost:3000` với JWT token.
 
 ## ⚙️ Biến môi trường
 
+Sao chép các file example chỉ chứa placeholder; không commit file môi trường thật.
+
 ### Backend (`backend/.env`)
 
 ```env
-# Server
 PORT=3000
-NODE_ENV=development
-
-# JWT
-JWT_SECRET=your_super_secret_key_here
-JWT_EXPIRES_IN=24h
-
-# Admin credentials (lần đầu khởi tạo)
+NODE_ENV=production
+JWT_SECRET=replace_with_at_least_32_random_bytes
+JWT_EXPIRES_IN=2h
 ADMIN_USERNAME=admin
-ADMIN_PASSWORD=changeme123
+ADMIN_PASSWORD=replace_with_strong_password
+PEER_KEY_ENCRYPTION_KEY=replace_with_32_byte_key
 
-# WireGuard
 WG_INTERFACE=wg0
 WG_CONFIG_PATH=/etc/wireguard/wg0.conf
+WG_SERVER_PRIVATE_KEY_PATH=/etc/wireguard/server_private.key
+WG_SERVER_PUBLIC_KEY_PATH=/etc/wireguard/server_public.key
+WG_SERVER_ADDRESS=10.99.0.1/24
+WG_SERVER_SUBNET=10.99.0.0/24
+WG_CLIENT_ALLOWED_IPS=10.10.10.0/24,10.99.0.0/24
 WG_SERVER_PORT=51820
-WG_SERVER_SUBNET=10.0.0.0/24
-WG_SERVER_IP=10.0.0.1
+SERVER_PUBLIC_IP=192.168.100.10
 
-# Server public IP (để generate client config)
-SERVER_PUBLIC_IP=your.server.public.ip
-
-# Database
-DB_PATH=./data/database.sqlite
-
-# Stats collection interval (milliseconds)
-STATS_INTERVAL=2000
+DB_PATH=/var/lib/wireguard-controller/database.sqlite
+STATS_INTERVAL=5000
+STATS_PERSIST_INTERVAL=60000
+MOCK_WIREGUARD=false
+CORS_ORIGIN=http://172.16.10.10:3001
 ```
+
+Production dừng khởi động nếu thiếu hoặc sai biến bắt buộc. `WG_SERVER_ADDRESS` phải chứa đầy đủ CIDR; controller không tự nối `/24`. `PEER_KEY_ENCRYPTION_KEY` phải là 32 byte dưới dạng base64 hoặc 64 ký tự hex.
 
 ### Frontend (`frontend/.env.local`)
 
 ```env
-NEXT_PUBLIC_API_URL=http://localhost:3000
-NEXT_PUBLIC_WS_URL=ws://localhost:3000
+NEXT_PUBLIC_API_URL=http://192.168.100.10:3000
+NEXT_PUBLIC_WS_URL=http://192.168.100.10:3000
 ```
+
+Các biến `NEXT_PUBLIC_*` là dữ liệu public và không được chứa secret.
 
 ---
 
 ## 📖 Hướng dẫn sử dụng
+
 
 ### Thêm peer mới
 
@@ -546,7 +532,8 @@ npm run test:coverage       # Coverage report
 # Frontend tests
 cd frontend
 npm test                    # Jest + React Testing Library
-npm run test:e2e            # Playwright end-to-end tests
+npm run lint
+npm run build
 ```
 
 ### Test API thủ công với curl
@@ -555,7 +542,7 @@ npm run test:e2e            # Playwright end-to-end tests
 # Đăng nhập
 curl -X POST http://localhost:3000/api/auth/login \
   -H "Content-Type: application/json" \
-  -d '{"username":"admin","password":"changeme123"}'
+  -d '{"username":"admin","password":"<strong-password>"}'
 
 # Lấy danh sách peers (cần token)
 curl http://localhost:3000/api/peers \
@@ -571,6 +558,10 @@ curl -X POST http://localhost:3000/api/peers \
 ---
 
 ## 🌐 Deployment lên Production
+
+> Backend production không chạy toàn bộ bằng root. Dùng dedicated service account và systemd capability giới hạn hoặc root-owned privileged helper đã audit. Không tự động sửa `/etc/sudoers`. Frontend luôn chạy non-root.
+
+Trong mô hình VMware routed, pfSense phân tách WAN/DMZ/LAN, có static route trả về `10.99.0.0/24` qua WireGuard Server và không NAT traffic tunnel-to-LAN. Xem cấu hình systemd mẫu tại `deploy/` và hướng dẫn chi tiết ở [docs/deployment.md](docs/deployment.md).
 
 ### Dùng Nginx làm Reverse Proxy
 
@@ -609,11 +600,17 @@ sudo certbot --nginx -d vpn.yourcompany.com
 
 ### Dùng PM2 để quản lý process
 
+Build frontend trước, sau đó chạy PM2 từ repository root:
+
 ```bash
+cd WireGuard-VPN
+cd frontend && npm run build && cd ..
 pm2 start ecosystem.config.js
 pm2 save
-pm2 startup   # Tự khởi động khi reboot server
+pm2 startup
 ```
+
+PM2 chỉ quản lý Node process; không thay thế `wg-quick@wg0`, routing, capability hay firewall.
 
 ---
 
@@ -647,7 +644,7 @@ Khi một peer kết nối, kernel Linux sẽ:
 iptables -A FORWARD -i wg0 -j ACCEPT
 
 # NAT để peers ra được Internet
-iptables -t nat -A POSTROUTING -s 10.0.0.0/24 -o eth0 -j MASQUERADE
+iptables -t nat -A POSTROUTING -s 10.99.0.0/24 -o eth0 -j MASQUERADE
 
 # Chặn một peer cụ thể
 iptables -A FORWARD -s 10.0.0.5/32 -j DROP
@@ -657,16 +654,60 @@ iptables -A FORWARD -s 10.0.0.5/32 -j DROP
 
 ## 🗺️ Roadmap
 
-- [x] CRUD peers cơ bản
-- [x] Tạo file `.conf` và QR code
-- [x] Real-time bandwidth monitoring
+- [x] CRUD peers có RBAC, validation và audit log
+- [x] Tạo file `.conf` và QR code Admin-only với private key mã hóa
+- [x] Real-time bandwidth monitoring và WebSocket JWT
 - [x] JWT authentication
+- [ ] Export CSV
+- [ ] Backup & Restore
 - [ ] Multi-server support (quản lý nhiều WireGuard server)
 - [ ] Email notification khi peer kết nối bất thường
 - [ ] Tích hợp LDAP/Active Directory
 - [ ] Mobile app (React Native)
 - [ ] Prometheus + Grafana metrics export
 - [ ] Kubernetes deployment
+
+---
+
+## 🔐 Lưu ý bảo mật và xử lý secret
+
+- Không commit `.env`, `.env.local`, SQLite, WireGuard private key, `wg0.conf` thật hoặc `server_keys.json`.
+- Không chạy backend hoặc frontend bằng root trong production.
+- Không đưa Dashboard trực tiếp ra WAN.
+- Bearer token hiện lưu trong `localStorage`, chỉ phù hợp lab cô lập. Kế hoạch production là chuyển sang Secure HttpOnly SameSite cookie kèm CSRF protection.
+- Setup mặc định chỉ tạo/kiểm tra cấu hình; `--apply` mới đồng bộ interface và không tự thay đổi firewall.
+- Stats real mode dùng `wg show <interface> dump`, không sinh CPU ngẫu nhiên; nếu chưa có collector tin cậy thì CPU trả `null/unavailable`.
+
+Repository từng theo dõi runtime secrets. Việc bỏ chúng khỏi index không xóa lịch sử Git. Sau khi triển khai, quản trị viên phải đổi WireGuard server key, cấp lại toàn bộ peer, đổi `JWT_SECRET`, `PEER_KEY_ENCRYPTION_KEY` và mật khẩu Admin. Cân nhắc dùng `git-filter-repo` theo tài liệu GitHub, nhưng chỉ thực hiện thủ công sau khi phối hợp với mọi người dùng repository.
+
+### Kiểm tra tự động hiện tại
+
+```bash
+cd backend
+npm ci
+npm run lint
+npm test
+npm run test:coverage
+npm audit --omit=dev
+
+cd ../frontend
+npm ci
+npm run lint
+npm test
+npm run test:coverage
+npm run build
+npm audit --omit=dev
+```
+
+CI chạy Node.js 22 ở mock mode, không sửa `/etc/wireguard` hoặc iptables. Real mode cần kiểm tra thủ công trên Ubuntu:
+
+```bash
+sysctl net.ipv4.ip_forward
+sudo wg-quick strip /etc/wireguard/wg0.conf
+sudo systemctl status wg-quick@wg0
+sudo wg show wg0 dump
+ip route
+```
 
 ---
 

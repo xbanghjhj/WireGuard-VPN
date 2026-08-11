@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef } from 'react';
 import { io } from 'socket.io-client';
-import { getToken, isAuthenticated } from '../lib/auth';
+import { getToken, isAuthenticated, clearSession } from '../lib/auth';
 
 const WS_URL = process.env.NEXT_PUBLIC_WS_URL || 'http://localhost:3000';
 
@@ -41,6 +41,10 @@ export default function useWebSocket() {
     socket.on('connect_error', (err) => {
       console.error('WebSocket connection error:', err.message);
       setIsConnected(false);
+      if (/authentication error/i.test(err.message)) {
+        clearSession();
+        window.dispatchEvent(new Event('auth:expired'));
+      }
     });
 
     return () => {

@@ -36,7 +36,6 @@ export default function Login() {
       setSession(token, user);
       router.push('/dashboard');
     } catch (err) {
-      console.error(err);
       setError(err.response?.data?.message || 'Kết nối máy chủ thất bại.');
     } finally {
       setLoading(false);

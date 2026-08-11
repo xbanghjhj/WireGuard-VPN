@@ -11,6 +11,7 @@ import {
   Legend,
   Filler
 } from 'chart.js';
+import { calculateBandwidthSample } from '../lib/bandwidth';
 
 // Đăng ký các thành phần biểu đồ cần thiết
 ChartJS.register(
@@ -49,33 +50,16 @@ export default function BandwidthChart({ liveData }) {
     ]
   });
 
-  const prevStats = useRef({ rx: 0, tx: 0, time: Date.now() });
+  const prevStats = useRef(null);
 
   useEffect(() => {
     if (!liveData) return;
 
-    let totalRx = 0;
-    let totalTx = 0;
-    liveData.peers.forEach(p => {
-      if (p.enabled && p.online) {
-        totalRx += p.rxBytes || 0;
-        totalTx += p.txBytes || 0;
-      }
-    });
-
     const now = Date.now();
-    const timeDelta = (now - prevStats.current.time) / 1000 || 2; // Giây
-
-    // Tính tốc độ: KB/s
-    const rxSpeed = Math.max(0, Math.round(((totalRx - prevStats.current.rx) / 1024) / timeDelta)) || 0;
-    const txSpeed = Math.max(0, Math.round(((totalTx - prevStats.current.tx) / 1024) / timeDelta)) || 0;
-
-    // Cập nhật giá trị lịch sử
-    prevStats.current = { rx: totalRx, tx: totalTx, time: now };
-
-    // Không vẽ tốc độ quá ảo nếu đây là lượt nhận gói đầu tiên (tốc độ ban đầu)
-    const activeRxSpeed = totalRx === totalRx - prevStats.current.rx ? 0 : rxSpeed;
-    const activeTxSpeed = totalTx === totalTx - prevStats.current.tx ? 0 : txSpeed;
+    const { rxSpeed, txSpeed, snapshot } = calculateBandwidthSample(prevStats.current, liveData, now);
+    prevStats.current = snapshot;
+    const activeRxSpeed = Math.round(rxSpeed / 1024);
+    const activeTxSpeed = Math.round(txSpeed / 1024);
 
     setChartData(prev => {
       const labels = [...prev.labels.slice(1), new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })];

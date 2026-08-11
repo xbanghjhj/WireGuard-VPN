@@ -32,7 +32,8 @@ export default function Dashboard() {
   const { 
     peers, 
     setPeers,
-    loading, 
+    loading,
+    error,
     fetchPeers, 
     createPeer, 
     togglePeer, 
@@ -42,15 +43,21 @@ export default function Dashboard() {
   } = usePeers();
 
   const { stats: liveStats, isConnected: wsConnected } = useWebSocket();
+  const isAdmin = currentUser?.role === 'admin';
 
   // Kiểm tra đăng nhập
   useEffect(() => {
+    const handleExpiredSession = () => router.replace('/login');
+    window.addEventListener('auth:expired', handleExpiredSession);
     if (!isAuthenticated()) {
       router.replace('/login');
     } else {
+      // Session storage is an external browser system; this hydrates its snapshot client-side.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setCurrentUser(getUser());
-      fetchPeers();
+      fetchPeers().catch(() => {});
     }
+    return () => window.removeEventListener('auth:expired', handleExpiredSession);
   }, [router, fetchPeers]);
 
   // Đồng bộ hóa danh sách peer từ dữ liệu WebSocket thời gian thực
@@ -175,6 +182,11 @@ export default function Dashboard() {
 
       {/* Main Container */}
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-8 space-y-8 animate-fade-in relative z-10">
+        {error && (
+          <div role="alert" className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-semibold text-red-700">
+            {error}
+          </div>
+        )}
         
         {/* Top Widgets Grid */}
         <section className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
@@ -323,13 +335,13 @@ export default function Dashboard() {
               </div>
 
               {/* Add New Peer Button */}
-              <button
+              {isAdmin && <button
                 onClick={() => setIsAddOpen(true)}
                 className="flex items-center justify-center space-x-2 px-4 py-2.5 bg-gradient-to-r from-sky-600 to-sky-500 hover:from-sky-700 hover:to-sky-600 text-white font-semibold text-sm rounded-xl shadow-md shadow-sky-500/10 active:scale-95 transition"
               >
                 <Plus className="h-4 w-4" />
                 <span>Thêm kết nối</span>
-              </button>
+              </button>}
             </div>
           </div>
 
@@ -344,7 +356,7 @@ export default function Dashboard() {
                   <th className="px-6 py-4">Handshake</th>
                   <th className="px-6 py-4">Lưu lượng RX / TX</th>
                   <th className="px-6 py-4">Endpoint thực</th>
-                  <th className="px-6 py-4 text-right">Hành động</th>
+                  {isAdmin && <th className="px-6 py-4 text-right">Hành động</th>}
                 </tr>
               </thead>
               <tbody className="divide-y divide-sky-100/50 bg-white/20">
@@ -419,7 +431,7 @@ export default function Dashboard() {
                       </td>
 
                       {/* Actions */}
-                      <td className="px-6 py-4 text-right">
+                      {isAdmin && <td className="px-6 py-4 text-right">
                         <div className="flex items-center justify-end space-x-2">
                           
                           {/* Enable/Disable Toggle */}
@@ -466,12 +478,12 @@ export default function Dashboard() {
                           </button>
 
                         </div>
-                      </td>
+                      </td>}
                     </tr>
                   ))
                 ) : (
                   <tr>
-                    <td colSpan="7" className="px-6 py-12 text-center text-sm font-semibold text-slate-400 bg-white/10">
+                    <td colSpan={isAdmin ? 7 : 6} className="px-6 py-12 text-center text-sm font-semibold text-slate-400 bg-white/10">
                       Không tìm thấy kết nối VPN nào.
                     </td>
                   </tr>
@@ -485,14 +497,14 @@ export default function Dashboard() {
       </main>
 
       {/* Add Peer Modal */}
-      <AddPeerModal
+      {isAdmin && <AddPeerModal
         isOpen={isAddOpen}
         onClose={() => setIsAddOpen(false)}
         onCreate={createPeer}
-      />
+      />}
 
       {/* QR Code / Config Viewer Modal */}
-      <QRCodeModal
+      {isAdmin && <QRCodeModal
         isOpen={isQROpen}
         onClose={() => {
           setIsQROpen(false);
@@ -501,7 +513,7 @@ export default function Dashboard() {
         peer={selectedPeer}
         getQRCode={getQRCode}
         downloadConfig={downloadConfig}
-      />
+      />}
 
     </div>
   );

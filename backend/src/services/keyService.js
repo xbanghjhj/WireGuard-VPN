@@ -1,35 +1,43 @@
-const { execSync } = require('child_process');
 const crypto = require('crypto');
+const fs = require('fs');
+const path = require('path');
+const { env } = require('../config/env');
+const commandRunner = require('./commandRunner');
 
-const isMock = process.env.MOCK_WIREGUARD === 'true';
-
-/**
- * Sinh cặp private key và public key cho WireGuard.
- * @returns { { privateKey: string, publicKey: string } }
- */
-function generateKeyPair() {
-  if (isMock) {
-    // Trong chế độ Mock, tạo ngẫu nhiên 32 byte base64 tương tự WireGuard keys
-    const privateKey = crypto.randomBytes(32).toString('base64');
-    // Tạo public key ngẫu nhiên khác để hiển thị
-    const publicKey = crypto.randomBytes(32).toString('base64');
-    return { privateKey, publicKey };
-  } else {
-    try {
-      // Trên Linux thực tế, gọi lệnh WireGuard CLI
-      const privateKey = execSync('wg genkey').toString().trim();
-      const publicKey = execSync(`echo "${privateKey}" | wg pubkey`).toString().trim();
-      return { privateKey, publicKey };
-    } catch (error) {
-      console.error('Error generating real WireGuard keys, using fallback random generation:', error.message);
-      // Fallback nếu không có wg command trên máy
-      const privateKey = crypto.randomBytes(32).toString('base64');
-      const publicKey = crypto.randomBytes(32).toString('base64');
-      return { privateKey, publicKey };
-    }
+async function generateKeyPair(runner = commandRunner) {
+  if (env.MOCK_WIREGUARD) {
+    return {
+      privateKey: crypto.randomBytes(32).toString('base64'),
+      publicKey: crypto.randomBytes(32).toString('base64'),
+      mock: true
+    };
   }
+  const privateResult = await runner.runFile('wg', ['genkey']);
+  const privateKey = privateResult.stdout.trim();
+  const publicResult = await runner.runFile('wg', ['pubkey'], { input: `${privateKey}\n` });
+  return { privateKey, publicKey: publicResult.stdout.trim(), mock: false };
 }
 
-module.exports = {
-  generateKeyPair
-};
+async function ensureServerKeyPair(runner = commandRunner) {
+  const privatePath = env.WG_SERVER_PRIVATE_KEY_PATH;
+  const publicPath = env.WG_SERVER_PUBLIC_KEY_PATH;
+  fs.mkdirSync(path.dirname(privatePath), { recursive: true, mode: 0o700 });
+  fs.mkdirSync(path.dirname(publicPath), { recursive: true, mode: 0o700 });
+  if (!fs.existsSync(privatePath)) {
+    const pair = await generateKeyPair(runner);
+    fs.writeFileSync(privatePath, `${pair.privateKey}\n`, { mode: 0o600, flag: 'wx' });
+    fs.writeFileSync(publicPath, `${pair.publicKey}\n`, { mode: 0o644 });
+  } else if (!fs.existsSync(publicPath)) {
+    const privateKey = fs.readFileSync(privatePath, 'utf8').trim();
+    if (env.MOCK_WIREGUARD) throw new Error('Mock server public key is missing; rotate the mock server key pair.');
+    const result = await runner.runFile('wg', ['pubkey'], { input: `${privateKey}\n` });
+    fs.writeFileSync(publicPath, `${result.stdout.trim()}\n`, { mode: 0o644 });
+  }
+  fs.chmodSync(privatePath, 0o600);
+  return {
+    privateKey: fs.readFileSync(privatePath, 'utf8').trim(),
+    publicKey: fs.readFileSync(publicPath, 'utf8').trim()
+  };
+}
+
+module.exports = { generateKeyPair, ensureServerKeyPair };

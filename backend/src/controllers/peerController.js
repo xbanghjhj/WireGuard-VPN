@@ -1,240 +1,151 @@
 const crypto = require('crypto');
 const db = require('../db/database');
+const { env } = require('../config/env');
 const keyService = require('../services/keyService');
 const qrService = require('../services/qrService');
 const wireguardService = require('../services/wireguardService');
 const iptablesService = require('../services/iptablesService');
 const statsService = require('../services/statsService');
+const auditService = require('../services/auditService');
+const { encryptPrivateKey, decryptPrivateKey } = require('../services/peerKeyCryptoService');
+const { allocateIp, withAllocationLock } = require('../services/ipAllocatorService');
 
-/**
- * Lấy danh sách tất cả peers kèm theo metrics thời gian thực.
- */
-async function getPeers(req, res) {
-  try {
-    const peersStats = await statsService.getPeersStats();
-    return res.status(200).json(peersStats);
-  } catch (error) {
-    console.error('Get peers error:', error);
-    return res.status(500).json({ message: 'Error retrieving peer list.' });
-  }
+const SAFE_COLUMNS = `id, name, publicKey, allowedIPs, dns, splitTunnel, createdAt, enabled,
+  rxBytes, txBytes, lastHandshake, endpoint, needsReprovision`;
+
+function peerDto(peer) {
+  return statsService.safePeerDto(peer);
 }
 
-/**
- * Lấy thông tin một peer cụ thể theo ID.
- */
-async function getPeerById(req, res) {
+async function recordFailure(req, action, peerId, error) {
   try {
-    const { id } = req.params;
-    const peer = await db.get('SELECT * FROM peers WHERE id = ?', [id]);
-    
-    if (!peer) {
-      return res.status(404).json({ message: 'Peer not found.' });
-    }
-
-    return res.status(200).json(peer);
-  } catch (error) {
-    console.error('Get peer by id error:', error);
-    return res.status(500).json({ message: 'Error retrieving peer details.' });
-  }
+    await auditService.writeAudit({ user: req.user, action, peerId, success: false, detail: error.message });
+  } catch { /* an audit failure must not hide the original failure */ }
 }
 
-/**
- * Tạo mới một peer VPN client, tự động cấp phát IP và sinh cặp khóa.
- */
-async function createPeer(req, res) {
+async function mutateAndSync(req, action, peerId, mutation) {
   try {
-    const { name, dns, splitTunnel } = req.body;
-
-    if (!name) {
-      return res.status(400).json({ message: 'Peer name is required.' });
-    }
-
-    // 1. Tự động cấp phát IP tiếp theo trong mạng VPN (vd: 10.0.0.2 -> 10.0.0.254)
-    const serverIP = process.env.WG_SERVER_IP || '10.0.0.1';
-    const ipPrefix = serverIP.substring(0, serverIP.lastIndexOf('.') + 1); // e.g. "10.0.0."
-    
-    const existingPeers = await db.all('SELECT allowedIPs FROM peers');
-    const usedOctets = new Set();
-    
-    // Thu thập các octet cuối đã sử dụng
-    existingPeers.forEach(p => {
-      if (p.allowedIPs) {
-        // Lấy IP từ chuỗi "10.0.0.5/32" -> "10.0.0.5" -> "5"
-        const cleanIP = p.allowedIPs.split('/')[0];
-        const lastOctet = parseInt(cleanIP.substring(cleanIP.lastIndexOf('.') + 1), 10);
-        if (!isNaN(lastOctet)) {
-          usedOctets.add(lastOctet);
-        }
-      }
+    return await db.withTransaction(async (tx) => {
+      const result = await mutation(tx);
+      await wireguardService.syncWireGuardConfig({ dbClient: tx });
+      await auditService.writeAudit({ user: req.user, action, peerId: result.id || peerId, success: true }, tx);
+      return result;
     });
-
-    // Quét tìm octet rảnh đầu tiên từ 2 đến 254
-    let allocatedOctet = 2;
-    for (let i = 2; i <= 254; i++) {
-      if (!usedOctets.has(i)) {
-        allocatedOctet = i;
-        break;
-      }
+  } catch (error) {
+    try { await wireguardService.syncWireGuardConfig(); } catch { /* best-effort runtime restore */ }
+    await recordFailure(req, action, peerId, error);
+    if (!error.status) {
+      error.status = 502;
+      error.publicMessage = 'WireGuard synchronization failed; the database change was rolled back.';
     }
+    throw error;
+  }
+}
 
-    if (allocatedOctet > 254) {
-      return res.status(400).json({ message: 'IP address space is full. Cannot allocate IP.' });
-    }
+async function getPeers(req, res, next) {
+  try { return res.json(await statsService.getPeersStats()); } catch (error) { return next(error); }
+}
 
-    const clientIP = `${ipPrefix}${allocatedOctet}/32`;
+async function getPeerById(req, res, next) {
+  try {
+    const peer = await db.get(`SELECT ${SAFE_COLUMNS} FROM peers WHERE id = ?`, [req.params.id]);
+    if (!peer) return res.status(404).json({ message: 'Peer not found.' });
+    return res.json(peerDto(peer));
+  } catch (error) { return next(error); }
+}
 
-    // 2. Sinh cặp keys
-    const keys = keyService.generateKeyPair();
-    
-    // 3. Lưu vào Database
-    const peerId = `peer_${crypto.randomBytes(6).toString('hex')}`;
-    const createdAt = new Date().toISOString();
-    const defaultDNS = dns || '1.1.1.1, 8.8.8.8';
-    const isSplitTunnel = splitTunnel === true || splitTunnel === 1 ? 1 : 0;
+async function createPeer(req, res, next) {
+  let createdId = null;
+  try {
+    const keys = await keyService.generateKeyPair();
+    const encrypted = encryptPrivateKey(keys.privateKey);
+    const created = await withAllocationLock(() => mutateAndSync(req, 'peer.create', null, async (tx) => {
+      const existing = await tx.all('SELECT allowedIPs FROM peers');
+      const allowedIPs = allocateIp({
+        subnet: env.WG_SERVER_SUBNET,
+        serverAddress: env.WG_SERVER_ADDRESS,
+        usedAddresses: existing.map((peer) => peer.allowedIPs)
+      });
+      const id = `peer_${crypto.randomBytes(12).toString('hex')}`;
+      createdId = id;
+      const createdAt = new Date().toISOString();
+      const splitTunnel = req.body.splitTunnel === false ? 0 : 1;
+      const dns = req.body.dns || '1.1.1.1, 8.8.8.8';
+      await tx.run(`INSERT INTO peers (
+        id, name, publicKey, privateKeyEncrypted, privateKeyIv, privateKeyAuthTag,
+        allowedIPs, dns, splitTunnel, createdAt, enabled, rxBytes, txBytes, needsReprovision
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, 0, 0)`, [
+        id, req.body.name, keys.publicKey, encrypted.privateKeyEncrypted, encrypted.privateKeyIv,
+        encrypted.privateKeyAuthTag, allowedIPs, dns, splitTunnel, createdAt
+      ]);
+      return { id, name: req.body.name, publicKey: keys.publicKey, allowedIPs, dns,
+        splitTunnel: splitTunnel === 1, createdAt, enabled: true, needsReprovision: false,
+        online: false, rxBytes: 0, txBytes: 0, rxFormatted: '0 B', txFormatted: '0 B',
+        lastHandshake: null, endpoint: null };
+    }));
+    return res.status(201).json(created);
+  } catch (error) {
+    if (error.code?.startsWith('SQLITE_CONSTRAINT')) error.status = 409;
+    if (createdId) error.peerId = createdId;
+    return next(error);
+  }
+}
 
-    await db.run(
-      `INSERT INTO peers (id, name, publicKey, privateKey, allowedIPs, dns, createdAt, enabled, rxBytes, txBytes, lastHandshake, endpoint)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 1, 0, 0, null, null)`,
-      [peerId, name, keys.publicKey, keys.privateKey, clientIP, defaultDNS, createdAt]
-    );
-
-    // Lưu splitTunnel vào database nếu SQLite hỗ trợ (hoặc SQLite schema đã lưu đầy đủ trong JSON fallback)
-    // Để giữ đơn giản cho schema tiêu chuẩn, ta có thể lưu cấu trúc splitTunnel
-    // Cập nhật lại cấu hình WireGuard wg0.conf và đồng bộ
-    await wireguardService.syncWireGuardConfig();
-
-    return res.status(201).json({
-      id: peerId,
-      name,
-      publicKey: keys.publicKey,
-      allowedIPs: clientIP,
-      dns: defaultDNS,
-      createdAt,
-      enabled: true
+async function updatePeer(req, res, next) {
+  try {
+    const result = await mutateAndSync(req, req.body.enabled ? 'peer.enable' : 'peer.disable', req.params.id, async (tx) => {
+      const peer = await tx.get(`SELECT ${SAFE_COLUMNS} FROM peers WHERE id = ?`, [req.params.id]);
+      if (!peer) { const error = new Error('Peer not found.'); error.status = 404; throw error; }
+      await tx.run('UPDATE peers SET enabled = ? WHERE id = ?', [req.body.enabled ? 1 : 0, req.params.id]);
+      return { ...peerDto(peer), enabled: req.body.enabled };
     });
-
-  } catch (error) {
-    console.error('Create peer error:', error);
-    return res.status(500).json({ message: 'Failed to create VPN peer.' });
-  }
+    try {
+      if (req.body.enabled) await iptablesService.unblockClientIP(result.allowedIPs);
+      else await iptablesService.blockClientIP(result.allowedIPs);
+    } catch (error) { console.error('Supplementary firewall rule failed:', error.message); }
+    return res.json(result);
+  } catch (error) { return next(error); }
 }
 
-/**
- * Cập nhật trạng thái peer (Bật/Tắt).
- */
-async function updatePeer(req, res) {
+async function deletePeer(req, res, next) {
   try {
-    const { id } = req.params;
-    const { enabled } = req.body;
-
-    if (enabled === undefined) {
-      return res.status(400).json({ message: 'Enabled field is required.' });
+    const deleted = await mutateAndSync(req, 'peer.delete', req.params.id, async (tx) => {
+      const peer = await tx.get(`SELECT ${SAFE_COLUMNS} FROM peers WHERE id = ?`, [req.params.id]);
+      if (!peer) { const error = new Error('Peer not found.'); error.status = 404; throw error; }
+      await tx.run('DELETE FROM peers WHERE id = ?', [req.params.id]);
+      return peerDto(peer);
+    });
+    try { await iptablesService.unblockClientIP(deleted.allowedIPs); } catch (error) {
+      console.error('Supplementary firewall cleanup failed:', error.message);
     }
-
-    const peer = await db.get('SELECT * FROM peers WHERE id = ?', [id]);
-    if (!peer) {
-      return res.status(404).json({ message: 'Peer not found.' });
-    }
-
-    const numericEnabled = enabled ? 1 : 0;
-    await db.run('UPDATE peers SET enabled = ? WHERE id = ?', [numericEnabled, id]);
-
-    // Đồng bộ lại card mạng WireGuard
-    await wireguardService.syncWireGuardConfig();
-
-    // Thêm quy tắc tường lửa tương ứng
-    if (!enabled) {
-      await iptablesService.blockClientIP(peer.allowedIPs);
-    } else {
-      await iptablesService.unblockClientIP(peer.allowedIPs);
-    }
-
-    return res.status(200).json({ id, enabled });
-  } catch (error) {
-    console.error('Update peer error:', error);
-    return res.status(500).json({ message: 'Failed to update peer status.' });
-  }
+    return res.json({ message: 'Peer deleted successfully.', id: deleted.id });
+  } catch (error) { return next(error); }
 }
 
-/**
- * Xóa một peer vĩnh viễn khỏi hệ thống.
- */
-async function deletePeer(req, res) {
+async function getPeerConfig(peerId) {
+  const peer = await db.get(`SELECT ${SAFE_COLUMNS}, privateKeyEncrypted, privateKeyIv, privateKeyAuthTag
+    FROM peers WHERE id = ?`, [peerId]);
+  if (!peer) { const error = new Error('Peer not found.'); error.status = 404; throw error; }
+  return { peer, content: qrService.generateClientConfig(peer, decryptPrivateKey(peer)) };
+}
+
+async function downloadPeerConfig(req, res, next) {
   try {
-    const { id } = req.params;
-    
-    const peer = await db.get('SELECT * FROM peers WHERE id = ?', [id]);
-    if (!peer) {
-      return res.status(404).json({ message: 'Peer not found.' });
-    }
-
-    // Xóa khỏi DB
-    await db.run('DELETE FROM peers WHERE id = ?', [id]);
-
-    // Đồng bộ lại card mạng WireGuard
-    await wireguardService.syncWireGuardConfig();
-
-    // Hủy quy tắc tường lửa nếu đang bị chặn
-    await iptablesService.unblockClientIP(peer.allowedIPs);
-
-    return res.status(200).json({ message: 'Peer deleted successfully.', id });
-  } catch (error) {
-    console.error('Delete peer error:', error);
-    return res.status(500).json({ message: 'Failed to delete peer.' });
-  }
+    const { peer, content } = await getPeerConfig(req.params.id);
+    await auditService.writeAudit({ user: req.user, action: 'peer.config.download', peerId: peer.id, success: true });
+    const filename = peer.name.replace(/[^a-zA-Z0-9_-]/g, '_');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}.conf"`);
+    res.type('text/plain').send(content);
+  } catch (error) { await recordFailure(req, 'peer.config.download', req.params.id, error); return next(error); }
 }
 
-/**
- * Tải file cấu hình .conf dành cho client.
- */
-async function downloadPeerConfig(req, res) {
+async function getPeerQRCode(req, res, next) {
   try {
-    const { id } = req.params;
-    const peer = await db.get('SELECT * FROM peers WHERE id = ?', [id]);
-
-    if (!peer) {
-      return res.status(404).json({ message: 'Peer not found.' });
-    }
-
-    const configContent = qrService.generateClientConfig(peer);
-    
-    res.setHeader('Content-disposition', `attachment; filename=${peer.name.replace(/[^a-zA-Z0-9]/g, '_')}.conf`);
-    res.setHeader('Content-type', 'text/plain');
-    return res.send(configContent);
-  } catch (error) {
-    console.error('Download config error:', error);
-    return res.status(500).json({ message: 'Failed to download configuration.' });
-  }
+    const { peer, content } = await getPeerConfig(req.params.id);
+    const qrCode = await qrService.generateQRCodeBase64(content);
+    await auditService.writeAudit({ user: req.user, action: 'peer.qrcode.view', peerId: peer.id, success: true });
+    return res.json({ qrCode });
+  } catch (error) { await recordFailure(req, 'peer.qrcode.view', req.params.id, error); return next(error); }
 }
 
-/**
- * Lấy QR Code cấu hình dưới dạng ảnh Base64.
- */
-async function getPeerQRCode(req, res) {
-  try {
-    const { id } = req.params;
-    const peer = await db.get('SELECT * FROM peers WHERE id = ?', [id]);
-
-    if (!peer) {
-      return res.status(404).json({ message: 'Peer not found.' });
-    }
-
-    const configContent = qrService.generateClientConfig(peer);
-    const qrCodeBase64 = await qrService.generateQRCodeBase64(configContent);
-
-    return res.status(200).json({ qrCode: qrCodeBase64 });
-  } catch (error) {
-    console.error('Get QR Code error:', error);
-    return res.status(500).json({ message: 'Failed to generate QR Code.' });
-  }
-}
-
-module.exports = {
-  getPeers,
-  getPeerById,
-  createPeer,
-  updatePeer,
-  deletePeer,
-  downloadPeerConfig,
-  getPeerQRCode
-};
+module.exports = { getPeers, getPeerById, createPeer, updatePeer, deletePeer, downloadPeerConfig, getPeerQRCode };

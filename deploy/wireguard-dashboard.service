@@ -1,0 +1,21 @@
+[Unit]
+Description=WireGuard Controller Dashboard
+After=network-online.target wireguard-controller.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=wireguard-dashboard
+Group=wireguard-dashboard
+WorkingDirectory=/opt/WireGuard-VPN/frontend
+EnvironmentFile=/etc/wireguard-controller/dashboard.env
+ExecStart=/usr/bin/npm start -- --port 3001
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+
+[Install]
+WantedBy=multi-user.target

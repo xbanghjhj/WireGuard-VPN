@@ -1,0 +1,24 @@
+[Unit]
+Description=WireGuard Controller API
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=wireguard-controller
+Group=wireguard-controller
+WorkingDirectory=/opt/WireGuard-VPN/backend
+EnvironmentFile=/etc/wireguard-controller/controller.env
+ExecStart=/usr/bin/node src/app.js
+Restart=on-failure
+RestartSec=5
+AmbientCapabilities=CAP_NET_ADMIN
+CapabilityBoundingSet=CAP_NET_ADMIN
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/etc/wireguard /var/lib/wireguard-controller
+
+[Install]
+WantedBy=multi-user.target

@@ -1,100 +1,86 @@
-require('dotenv').config();
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
-const { generateKeyPair } = require('../src/services/keyService');
+const { env } = require('../src/config/env');
+const db = require('../src/db/database');
+const commandRunner = require('../src/services/commandRunner');
+const keyService = require('../src/services/keyService');
+const wireguardService = require('../src/services/wireguardService');
 
-const isMock = process.env.MOCK_WIREGUARD === 'true';
-const dbPath = process.env.DB_PATH || './data/database.sqlite';
-const dataDir = path.dirname(dbPath);
-
-// Tạo thư mục data nếu chưa có
-if (!fs.existsSync(dataDir)) {
-  fs.mkdirSync(dataDir, { recursive: true });
+function assertArguments(argv) {
+  const unknown = argv.filter((item) => item !== '--apply');
+  if (unknown.length) throw new Error(`Unknown setup option: ${unknown.join(', ')}`);
+  return argv.includes('--apply');
 }
 
-async function runSetup() {
-  console.log('=== WireGuard Controller Setup ===');
-  
-  // 1. Tạo Server Keys nếu chưa có
-  let serverPrivateKey = '';
-  let serverPublicKey = '';
-  
-  const serverKeyPath = path.join(dataDir, 'server_keys.json');
-  if (fs.existsSync(serverKeyPath)) {
-    console.log('Loading existing Server Keys...');
-    const keys = JSON.parse(fs.readFileSync(serverKeyPath, 'utf8'));
-    serverPrivateKey = keys.privateKey;
-    serverPublicKey = keys.publicKey;
-  } else {
-    console.log('Generating new Server Keys...');
-    const keys = generateKeyPair();
-    serverPrivateKey = keys.privateKey;
-    serverPublicKey = keys.publicKey;
-    fs.writeFileSync(serverKeyPath, JSON.stringify(keys, null, 2), 'utf8');
-    console.log('Server Keys generated and saved to', serverKeyPath);
+function assertStrongPassword(password) {
+  const categories = [/[a-z]/, /[A-Z]/, /\d/, /[^a-zA-Z0-9]/].filter((pattern) => pattern.test(password)).length;
+  if (password.length < 12 || categories < 3) {
+    throw new Error('ADMIN_PASSWORD must be at least 12 characters and use at least three character categories.');
   }
-
-  // 2. Tạo file cấu hình wg0.conf
-  const configPath = process.env.WG_CONFIG_PATH || './data/wg0.conf';
-  const configDir = path.dirname(configPath);
-  if (!fs.existsSync(configDir)) {
-    fs.mkdirSync(configDir, { recursive: true });
-  }
-
-  if (!fs.existsSync(configPath)) {
-    console.log('Creating default WireGuard Server Config at:', configPath);
-    const serverPort = process.env.WG_SERVER_PORT || 51820;
-    const serverIP = process.env.WG_SERVER_IP || '10.0.0.1';
-    
-    const defaultConfig = `[Interface]
-PrivateKey = ${serverPrivateKey}
-Address = ${serverIP}/24
-ListenPort = ${serverPort}
-
-# PostUp/PostDown rules for NAT (Linux only)
-# PostUp = iptables -A FORWARD -i %i -j ACCEPT; iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE
-# PostDown = iptables -D FORWARD -i %i -j ACCEPT; iptables -t nat -D POSTROUTING -o eth0 -j MASQUERADE
-`;
-    fs.writeFileSync(configPath, defaultConfig, 'utf8');
-    console.log('Default config written.');
-  } else {
-    console.log('WireGuard config already exists at:', configPath);
-  }
-
-  // 3. Khởi tạo Admin User trong database
-  const db = require('../src/db/database');
-  
-  // Chờ database kết nối và thiết lập xong
-  setTimeout(async () => {
-    try {
-      const adminUsername = process.env.ADMIN_USERNAME || 'admin';
-      const adminPassword = process.env.ADMIN_PASSWORD || 'admin123';
-      
-      const existingAdmin = await db.get('SELECT * FROM users WHERE username = ?', [adminUsername]);
-      
-      if (!existingAdmin) {
-        console.log(`Creating Admin user: "${adminUsername}"...`);
-        const hashedPassword = await bcrypt.hash(adminPassword, 10);
-        await db.run(
-          'INSERT INTO users (username, password, role) VALUES (?, ?, ?)',
-          [adminUsername, hashedPassword, 'admin']
-        );
-        console.log('Admin user created successfully.');
-      } else {
-        console.log(`Admin user "${adminUsername}" already exists.`);
-      }
-      
-      console.log('=== Setup Completed Successfully ===');
-      process.exit(0);
-    } catch (err) {
-      console.error('Setup error:', err.message);
-      process.exit(1);
-    }
-  }, 1000);
 }
 
-runSetup().catch(err => {
-  console.error('Setup script failed:', err);
-  process.exit(1);
-});
+async function createValidatedConfig(runner = commandRunner) {
+  const keys = await keyService.ensureServerKeyPair(runner);
+  const peers = await db.all('SELECT id, name, publicKey, allowedIPs FROM peers WHERE enabled = 1');
+  const directory = path.dirname(env.WG_CONFIG_PATH);
+  fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+  const temporaryPath = path.join(directory, `.${path.basename(env.WG_CONFIG_PATH)}.${process.pid}-${crypto.randomBytes(4).toString('hex')}.tmp`);
+  fs.writeFileSync(temporaryPath, wireguardService.renderServerConfig(keys.privateKey, peers), { mode: 0o600, flag: 'wx' });
+  try {
+    if (!env.MOCK_WIREGUARD) await runner.runFile('wg-quick', ['strip', temporaryPath]);
+    fs.renameSync(temporaryPath, env.WG_CONFIG_PATH);
+    fs.chmodSync(env.WG_CONFIG_PATH, 0o600);
+  } finally {
+    if (fs.existsSync(temporaryPath)) fs.unlinkSync(temporaryPath);
+  }
+}
+
+async function ensureAdmin() {
+  assertStrongPassword(env.ADMIN_PASSWORD);
+  const existing = await db.get('SELECT id FROM users WHERE username = ?', [env.ADMIN_USERNAME]);
+  if (existing) return false;
+  const passwordHash = await bcrypt.hash(env.ADMIN_PASSWORD, 12);
+  await db.run('INSERT INTO users (username, password, role) VALUES (?, ?, ?)', [
+    env.ADMIN_USERNAME, passwordHash, 'admin'
+  ]);
+  return true;
+}
+
+async function checkIpForwarding(runner = commandRunner) {
+  if (env.MOCK_WIREGUARD) return { enabled: null, mock: true };
+  const result = await runner.runFile('sysctl', ['-n', 'net.ipv4.ip_forward']);
+  return { enabled: result.stdout.trim() === '1', mock: false };
+}
+
+async function runSetup(argv = process.argv.slice(2), runner = commandRunner) {
+  const apply = assertArguments(argv);
+  await db.ready;
+  const forwarding = await checkIpForwarding(runner);
+  if (apply && forwarding.enabled === false) {
+    throw new Error('net.ipv4.ip_forward is disabled; enable it before using --apply.');
+  }
+  await createValidatedConfig(runner);
+  const adminCreated = await ensureAdmin();
+  if (apply) await wireguardService.syncWireGuardConfig({ runner });
+
+  console.log(`Setup complete (${env.MOCK_WIREGUARD ? 'MOCK - generated configs cannot connect a VPN' : 'REAL'} mode).`);
+  console.log(`Interface apply: ${apply ? 'requested' : 'not requested; run again with --apply after review'}.`);
+  console.log(`IP forwarding: ${forwarding.mock ? 'not checked in mock mode' : forwarding.enabled ? 'enabled' : 'DISABLED'}.`);
+  console.log(`Admin account: ${adminCreated ? 'created' : 'already exists'}.`);
+  console.log('No firewall rules were changed.');
+  return { apply, forwarding, adminCreated };
+}
+
+if (require.main === module) {
+  runSetup()
+    .then(() => db.close())
+    .catch(async (error) => {
+      console.error(`Setup failed: ${error.message}`);
+      try { await db.close(); } catch { /* initialization may have failed */ }
+      process.exitCode = 1;
+    });
+}
+
+module.exports = { runSetup, assertArguments, assertStrongPassword, createValidatedConfig, ensureAdmin, checkIpForwarding };

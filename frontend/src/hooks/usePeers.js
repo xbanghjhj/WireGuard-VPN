@@ -26,6 +26,7 @@ export default function usePeers() {
   // Tạo mới Peer
   const createPeer = useCallback(async ({ name, dns, splitTunnel }) => {
     setLoading(true);
+    setError(null);
     try {
       const response = await api.post('/api/peers', { name, dns, splitTunnel });
       // Thêm peer mới vào danh sách hiện tại
@@ -33,6 +34,7 @@ export default function usePeers() {
       return response.data;
     } catch (err) {
       const msg = err.response?.data?.message || 'Failed to create peer.';
+      setError(msg);
       throw new Error(msg);
     } finally {
       setLoading(false);
@@ -41,6 +43,7 @@ export default function usePeers() {
 
   // Bật/tắt Peer
   const togglePeer = useCallback(async (id, enabled) => {
+    setError(null);
     try {
       const response = await api.patch(`/api/peers/${id}`, { enabled });
       // Cập nhật trạng thái trong client list
@@ -50,29 +53,33 @@ export default function usePeers() {
       return response.data;
     } catch (err) {
       const msg = err.response?.data?.message || 'Failed to update peer status.';
+      setError(msg);
       throw new Error(msg);
     }
   }, []);
 
   // Xóa Peer
   const deletePeer = useCallback(async (id) => {
+    setError(null);
     try {
       await api.delete(`/api/peers/${id}`);
       setPeers(prev => prev.filter(p => p.id !== id));
     } catch (err) {
       const msg = err.response?.data?.message || 'Failed to delete peer.';
+      setError(msg);
       throw new Error(msg);
     }
   }, []);
 
   // Tải file cấu hình .conf
   const downloadConfig = useCallback(async (id, filename) => {
+    let url;
     try {
       const response = await api.get(`/api/peers/${id}/config`, {
         responseType: 'blob'
       });
       // Tạo URL download file
-      const url = window.URL.createObjectURL(new Blob([response.data]));
+      url = window.URL.createObjectURL(new Blob([response.data]));
       const link = document.createElement('a');
       link.href = url;
       link.setAttribute('download', `${filename.replace(/[^a-zA-Z0-9]/g, '_')}.conf`);
@@ -80,8 +87,11 @@ export default function usePeers() {
       link.click();
       document.body.removeChild(link);
     } catch (err) {
-      console.error('Download config error:', err);
-      throw new Error('Failed to download peer config.');
+      const msg = err.response?.data?.message || 'Failed to download peer config.';
+      setError(msg);
+      throw new Error(msg);
+    } finally {
+      if (url) window.URL.revokeObjectURL(url);
     }
   }, []);
 
@@ -92,6 +102,7 @@ export default function usePeers() {
       return response.data.qrCode;
     } catch (err) {
       const msg = err.response?.data?.message || 'Failed to retrieve QR Code.';
+      setError(msg);
       throw new Error(msg);
     }
   }, []);

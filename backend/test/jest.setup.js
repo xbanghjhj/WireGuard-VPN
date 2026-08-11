@@ -1,0 +1,25 @@
+const os = require('os');
+const path = require('path');
+const crypto = require('crypto');
+
+const root = path.join(os.tmpdir(), `wireguard-controller-jest-${process.pid}-${crypto.randomBytes(5).toString('hex')}`);
+process.env.NODE_ENV = 'test';
+process.env.JWT_SECRET = 'jest-secret-that-is-at-least-thirty-two-bytes';
+process.env.ADMIN_USERNAME = 'test-admin';
+process.env.ADMIN_PASSWORD = 'Strong-Test-Password-123!';
+process.env.PEER_KEY_ENCRYPTION_KEY = Buffer.alloc(32, 9).toString('base64');
+process.env.WG_INTERFACE = 'wg0';
+process.env.WG_CONFIG_PATH = path.join(root, 'wg0.conf');
+process.env.WG_SERVER_PRIVATE_KEY_PATH = path.join(root, 'server_private.key');
+process.env.WG_SERVER_PUBLIC_KEY_PATH = path.join(root, 'server_public.key');
+process.env.WG_SERVER_ADDRESS = '10.99.0.1/29';
+process.env.WG_SERVER_SUBNET = '10.99.0.0/29';
+process.env.WG_CLIENT_ALLOWED_IPS = '10.10.10.0/24,10.99.0.0/29';
+process.env.WG_SERVER_PORT = '51820';
+process.env.SERVER_PUBLIC_IP = '192.0.2.10';
+process.env.DB_PATH = path.join(root, 'database.sqlite');
+process.env.STATS_INTERVAL = '5000';
+process.env.STATS_PERSIST_INTERVAL = '60000';
+process.env.MOCK_WIREGUARD = 'true';
+process.env.CORS_ORIGIN = 'http://localhost:3001';
+process.env.TEST_RUNTIME_DIR = root;

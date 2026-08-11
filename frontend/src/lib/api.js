@@ -28,11 +28,9 @@ api.interceptors.request.use(
 api.interceptors.response.use(
   (response) => response,
   (error) => {
-    if (error.response && (error.response.status === 401 || error.response.status === 403)) {
+    if (error.response?.status === 401) {
       clearSession();
-      if (typeof window !== 'undefined' && window.location.pathname !== '/login') {
-        window.location.href = '/login';
-      }
+      if (typeof window !== 'undefined') window.dispatchEvent(new Event('auth:expired'));
     }
     return Promise.reject(error);
   }

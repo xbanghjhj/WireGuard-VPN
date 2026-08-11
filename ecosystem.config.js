@@ -1,9 +1,11 @@
+const path = require('path');
+
 module.exports = {
   apps: [
     {
       name: 'wireguard-backend',
       script: 'src/app.js',
-      cwd: './backend',
+      cwd: path.join(__dirname, 'backend'),
       instances: 1,
       autorestart: true,
       watch: false,
@@ -19,7 +21,7 @@ module.exports = {
       name: 'wireguard-frontend',
       script: 'node_modules/next/dist/bin/next',
       args: 'start',
-      cwd: './frontend',
+      cwd: path.join(__dirname, 'frontend'),
       instances: 1,
       autorestart: true,
       watch: false,

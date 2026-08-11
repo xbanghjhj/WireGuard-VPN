@@ -1,80 +1,39 @@
-const { execSync } = require('child_process');
+const net = require('net');
+const { env } = require('../config/env');
+const commandRunner = require('./commandRunner');
 
-const isMock = process.env.MOCK_WIREGUARD === 'true';
-
-/**
- * Chặn lưu lượng truy cập của một Peer IP thông qua iptables.
- * @param {string} clientIP IP của client (vd: 10.0.0.5)
- * @returns {Promise<boolean>}
- */
-async function blockClientIP(clientIP) {
-  if (!clientIP) return false;
-  // Trích xuất IP sạch (loại bỏ /32 nếu có)
-  const cleanIP = clientIP.split('/')[0];
-  
-  if (isMock) {
-    console.log(`[MOCK] Firewall rules: Blocked client IP ${cleanIP} via iptables.`);
-    return true;
-  } else {
-    try {
-      // Thêm quy tắc DROP vào đầu chuỗi FORWARD
-      // Kiểm tra xem quy tắc đã tồn tại chưa để tránh trùng lặp
-      try {
-        execSync(`sudo iptables -C FORWARD -s ${cleanIP} -j DROP`, { stdio: 'ignore' });
-        console.log(`Firewall rule already exists for blocking ${cleanIP}`);
-        return true;
-      } catch (checkErr) {
-        // Lệnh check trả về lỗi nghĩa là quy tắc chưa có -> Tiến hành thêm mới
-        execSync(`sudo iptables -I FORWARD -s ${cleanIP} -j DROP`);
-        console.log(`Successfully blocked client IP ${cleanIP} via iptables.`);
-        return true;
-      }
-    } catch (err) {
-      console.error(`Failed to block client IP ${cleanIP} via iptables:`, err.message);
-      return false;
-    }
+function normalizeClientAddress(value) {
+  const [ip, prefix] = String(value || '').split('/');
+  if (net.isIP(ip) !== 4 || (prefix !== undefined && (!/^\d+$/.test(prefix) || Number(prefix) > 32))) {
+    throw new Error('A valid IPv4 address or CIDR is required.');
   }
+  return ip;
 }
 
-/**
- * Mở chặn lưu lượng truy cập của một Peer IP thông qua iptables.
- * @param {string} clientIP IP của client (vd: 10.0.0.5)
- * @returns {Promise<boolean>}
- */
-async function unblockClientIP(clientIP) {
-  if (!clientIP) return false;
-  const cleanIP = clientIP.split('/')[0];
-  
-  if (isMock) {
-    console.log(`[MOCK] Firewall rules: Unblocked client IP ${cleanIP} via iptables.`);
-    return true;
-  } else {
-    try {
-      // Xóa tất cả quy tắc DROP cho IP này trong chuỗi FORWARD
-      let deleted = false;
-      while (true) {
-        try {
-          execSync(`sudo iptables -D FORWARD -s ${cleanIP} -j DROP`, { stdio: 'ignore' });
-          deleted = true;
-        } catch (e) {
-          // Khi không xóa được nữa (hết quy tắc trùng khớp)
-          break;
-        }
-      }
-      if (deleted) {
-        console.log(`Successfully unblocked client IP ${cleanIP} via iptables.`);
-      } else {
-        console.log(`No blocking firewall rules found for ${cleanIP}.`);
-      }
-      return true;
-    } catch (err) {
-      console.error(`Failed to unblock client IP ${cleanIP} via iptables:`, err.message);
-      return false;
-    }
+async function blockClientIP(clientAddress, runner = commandRunner) {
+  const ip = normalizeClientAddress(clientAddress);
+  if (env.MOCK_WIREGUARD) return true;
+  try {
+    await runner.runFile('iptables', ['-C', 'FORWARD', '-s', ip, '-j', 'DROP']);
+  } catch {
+    await runner.runFile('iptables', ['-I', 'FORWARD', '-s', ip, '-j', 'DROP']);
   }
+  return true;
 }
 
-module.exports = {
-  blockClientIP,
-  unblockClientIP
-};
+async function unblockClientIP(clientAddress, runner = commandRunner) {
+  const ip = normalizeClientAddress(clientAddress);
+  if (env.MOCK_WIREGUARD) return true;
+  let ruleExists = true;
+  while (ruleExists) {
+    try {
+      await runner.runFile('iptables', ['-C', 'FORWARD', '-s', ip, '-j', 'DROP']);
+      await runner.runFile('iptables', ['-D', 'FORWARD', '-s', ip, '-j', 'DROP']);
+    } catch {
+      ruleExists = false;
+    }
+  }
+  return true;
+}
+
+module.exports = { normalizeClientAddress, blockClientIP, unblockClientIP };

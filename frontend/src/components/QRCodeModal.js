@@ -8,6 +8,8 @@ export default function QRCodeModal({ isOpen, onClose, peer, getQRCode, download
 
   useEffect(() => {
     if (isOpen && peer) {
+      // Loading state begins in response to the external QR request lifecycle.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setLoading(true);
       getQRCode(peer.id)
         .then(url => {

@@ -1,200 +1,94 @@
-const { execSync } = require('child_process');
 const db = require('../db/database');
+const { env } = require('../config/env');
+const commandRunner = require('./commandRunner');
 
-const isMock = process.env.MOCK_WIREGUARD === 'true';
-const wgInterface = process.env.WG_INTERFACE || 'wg0';
+const runtimeCache = new Map();
+let pollPromise = null;
+let lastPersistAt = 0;
 
-// Bộ nhớ đệm giả lập để lưu giữ trạng thái hoạt động của các peer
-const mockPeersCache = {};
+function parseWgDump(output) {
+  const lines = String(output).trim().split('\n').filter(Boolean);
+  const peers = new Map();
+  for (const line of lines.slice(1)) {
+    const parts = line.split('\t');
+    if (parts.length < 8) continue;
+    const handshake = Number(parts[4]);
+    peers.set(parts[0], {
+      endpoint: parts[2] === '(none)' ? null : parts[2],
+      lastHandshake: handshake > 0 ? new Date(handshake * 1000).toISOString() : null,
+      rxBytes: Number(parts[5]) || 0,
+      txBytes: Number(parts[6]) || 0
+    });
+  }
+  return peers;
+}
 
-/**
- * Đọc lưu lượng và trạng thái bắt tay thực tế từ WireGuard hoặc sinh dữ liệu giả lập.
- * @returns {Promise<Array>} Danh sách các peer kèm thống kê băng thông
- */
-async function getPeersStats() {
-  const peers = await db.all('SELECT * FROM peers');
-  
-  if (isMock) {
-    const now = new Date();
-    const updatedPeers = [];
+function formatBytes(bytes) {
+  if (!bytes) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  const index = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+  return `${parseFloat((bytes / (1024 ** index)).toFixed(2))} ${units[index]}`;
+}
 
+function safePeerDto(peer, stats = {}) {
+  const rxBytes = Number(stats.rxBytes ?? peer.rxBytes) || 0;
+  const txBytes = Number(stats.txBytes ?? peer.txBytes) || 0;
+  const lastHandshake = stats.lastHandshake ?? peer.lastHandshake ?? null;
+  const online = peer.enabled === 1 && Boolean(lastHandshake)
+    && Date.now() - new Date(lastHandshake).getTime() < 300000;
+  return {
+    id: peer.id, name: peer.name, publicKey: peer.publicKey, allowedIPs: peer.allowedIPs,
+    dns: peer.dns, splitTunnel: peer.splitTunnel === 1, createdAt: peer.createdAt,
+    enabled: peer.enabled === 1, needsReprovision: peer.needsReprovision === 1,
+    online, rxBytes, txBytes, rxFormatted: formatBytes(rxBytes), txFormatted: formatBytes(txBytes),
+    lastHandshake, endpoint: stats.endpoint ?? peer.endpoint ?? null
+  };
+}
+
+async function persistStats(peers) {
+  if (Date.now() - lastPersistAt < env.STATS_PERSIST_INTERVAL) return;
+  lastPersistAt = Date.now();
+  await db.withTransaction(async (tx) => {
     for (const peer of peers) {
-      // Chỉ giả lập hoạt động cho các peer đang ENABLED
+      await tx.run('UPDATE peers SET rxBytes = ?, txBytes = ?, lastHandshake = ?, endpoint = ? WHERE id = ?', [
+        peer.rxBytes, peer.txBytes, peer.lastHandshake, peer.endpoint, peer.id
+      ]);
+    }
+  });
+}
+
+async function collect(runner) {
+  const peers = await db.all(`SELECT id, name, publicKey, allowedIPs, dns, splitTunnel, createdAt,
+    enabled, rxBytes, txBytes, lastHandshake, endpoint, needsReprovision FROM peers`);
+  if (env.MOCK_WIREGUARD) {
+    const result = peers.map((peer) => {
+      const cached = runtimeCache.get(peer.id) || { rxBytes: peer.rxBytes, txBytes: peer.txBytes };
       if (peer.enabled === 1) {
-        // Khởi tạo cache nếu chưa có
-        if (!mockPeersCache[peer.id]) {
-          mockPeersCache[peer.id] = {
-            rxBytes: peer.rxBytes || Math.floor(Math.random() * 5000000),
-            txBytes: peer.txBytes || Math.floor(Math.random() * 2000000),
-            lastHandshake: peer.lastHandshake || new Date(now - Math.random() * 3600000).toISOString(),
-            endpoint: peer.endpoint || `115.79.${Math.floor(Math.random() * 254) + 1}.${Math.floor(Math.random() * 254) + 1}:${Math.floor(Math.random() * 64511) + 1024}`,
-            isOnline: Math.random() > 0.3 // 70% cơ hội online
-          };
-        }
-
-        const cache = mockPeersCache[peer.id];
-
-        // Nếu online, mô phỏng tăng lưu lượng
-        if (cache.isOnline) {
-          // Tăng lượng bytes nhận/gửi ngẫu nhiên (từ 50KB đến 2.5MB mỗi chu kỳ)
-          const rxDelta = Math.floor(Math.random() * 2500000) + 50000;
-          const txDelta = Math.floor(Math.random() * 1200000) + 20000;
-          
-          cache.rxBytes += rxDelta;
-          cache.txBytes += txDelta;
-          cache.lastHandshake = now.toISOString();
-          
-          // Cập nhật vào DB để lưu giữ tiến trình
-          await db.run(
-            'UPDATE peers SET rxBytes = ?, txBytes = ?, lastHandshake = ?, endpoint = ? WHERE id = ?',
-            [cache.rxBytes, cache.txBytes, cache.lastHandshake, cache.endpoint, peer.id]
-          );
-        }
-
-        updatedPeers.push({
-          id: peer.id,
-          name: peer.name,
-          publicKey: peer.publicKey,
-          allowedIPs: peer.allowedIPs,
-          enabled: true,
-          online: cache.isOnline,
-          rxBytes: cache.rxBytes,
-          txBytes: cache.txBytes,
-          rxFormatted: formatBytes(cache.rxBytes),
-          txFormatted: formatBytes(cache.txBytes),
-          lastHandshake: cache.lastHandshake,
-          endpoint: cache.endpoint
-        });
-      } else {
-        // Peer bị disable
-        if (mockPeersCache[peer.id]) {
-          delete mockPeersCache[peer.id];
-        }
-        updatedPeers.push({
-          id: peer.id,
-          name: peer.name,
-          publicKey: peer.publicKey,
-          allowedIPs: peer.allowedIPs,
-          enabled: false,
-          online: false,
-          rxBytes: peer.rxBytes || 0,
-          txBytes: peer.txBytes || 0,
-          rxFormatted: formatBytes(peer.rxBytes || 0),
-          txFormatted: formatBytes(peer.txBytes || 0),
-          lastHandshake: peer.lastHandshake || null,
-          endpoint: peer.endpoint || null
-        });
+        cached.rxBytes += Math.floor(Math.random() * 100000);
+        cached.txBytes += Math.floor(Math.random() * 50000);
+        cached.lastHandshake = new Date().toISOString();
+        cached.endpoint = null;
       }
-    }
-
-    return updatedPeers;
-  } else {
-    // Trên Linux thực tế, thực thi lệnh `wg show <interface> dump`
-    try {
-      const dumpOutput = execSync(`sudo wg show ${wgInterface} dump`).toString().trim();
-      const lines = dumpOutput.split('\n');
-      // Bỏ dòng đầu tiên (chứa thông tin interface server)
-      const peerLines = lines.slice(1);
-      
-      const wgStatsMap = {};
-      peerLines.forEach(line => {
-        const parts = line.split('\t');
-        if (parts.length >= 8) {
-          const pubKey = parts[0];
-          const endpoint = parts[2] === '(none)' ? null : parts[2];
-          const lastHandshakeEpoch = parseInt(parts[4], 10);
-          const rxBytes = parseInt(parts[5], 10);
-          const txBytes = parseInt(parts[6], 10);
-          
-          wgStatsMap[pubKey] = {
-            endpoint,
-            lastHandshake: lastHandshakeEpoch > 0 ? new Date(lastHandshakeEpoch * 1000).toISOString() : null,
-            rxBytes,
-            txBytes
-          };
-        }
-      });
-
-      const updatedPeers = [];
-      const now = Date.now();
-
-      for (const peer of peers) {
-        const stats = wgStatsMap[peer.publicKey];
-        
-        let rx = peer.rxBytes || 0;
-        let tx = peer.txBytes || 0;
-        let lastHandshake = peer.lastHandshake || null;
-        let endpoint = peer.endpoint || null;
-        let online = false;
-
-        if (stats && peer.enabled === 1) {
-          rx = stats.rxBytes;
-          tx = stats.txBytes;
-          lastHandshake = stats.lastHandshake;
-          endpoint = stats.endpoint;
-          
-          // Xác định online nếu có handshake trong vòng 5 phút (300 giây)
-          if (lastHandshake) {
-            const handshakeTime = new Date(lastHandshake).getTime();
-            online = (now - handshakeTime) < 300000;
-          }
-
-          // Cập nhật lại vào Database
-          await db.run(
-            'UPDATE peers SET rxBytes = ?, txBytes = ?, lastHandshake = ?, endpoint = ? WHERE id = ?',
-            [rx, tx, lastHandshake, endpoint, peer.id]
-          );
-        }
-
-        updatedPeers.push({
-          id: peer.id,
-          name: peer.name,
-          publicKey: peer.publicKey,
-          allowedIPs: peer.allowedIPs,
-          enabled: peer.enabled === 1,
-          online,
-          rxBytes: rx,
-          txBytes: tx,
-          rxFormatted: formatBytes(rx),
-          txFormatted: formatBytes(tx),
-          lastHandshake,
-          endpoint
-        });
-      }
-
-      return updatedPeers;
-    } catch (err) {
-      console.error('Failed to run wg show dump command, returning database stats fallback:', err.message);
-      // Fallback khi lệnh lỗi: trả về dữ liệu lưu trong DB
-      return peers.map(peer => ({
-        id: peer.id,
-        name: peer.name,
-        publicKey: peer.publicKey,
-        allowedIPs: peer.allowedIPs,
-        enabled: peer.enabled === 1,
-        online: false,
-        rxBytes: peer.rxBytes || 0,
-        txBytes: peer.txBytes || 0,
-        rxFormatted: formatBytes(peer.rxBytes || 0),
-        txFormatted: formatBytes(peer.txBytes || 0),
-        lastHandshake: peer.lastHandshake || null,
-        endpoint: peer.endpoint || null
-      }));
-    }
+      runtimeCache.set(peer.id, cached);
+      return safePeerDto(peer, cached);
+    });
+    await persistStats(result);
+    return result;
+  }
+  try {
+    const result = await runner.runFile('wg', ['show', env.WG_INTERFACE, 'dump']);
+    const parsed = parseWgDump(result.stdout);
+    const safePeers = peers.map((peer) => safePeerDto(peer, parsed.get(peer.publicKey)));
+    await persistStats(safePeers);
+    return safePeers;
+  } catch (error) {
+    return peers.map((peer) => safePeerDto(peer));
   }
 }
 
-/**
- * Định dạng số bytes sang đơn vị đọc được (KB, MB, GB).
- */
-function formatBytes(bytes) {
-  if (bytes === 0) return '0 B';
-  const k = 1024;
-  const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
-  const i = Math.floor(Math.log(bytes) / Math.log(k));
-  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+function getPeersStats(runner = commandRunner) {
+  if (!pollPromise) pollPromise = collect(runner).finally(() => { pollPromise = null; });
+  return pollPromise;
 }
 
-module.exports = {
-  getPeersStats
-};
+module.exports = { parseWgDump, formatBytes, safePeerDto, getPeersStats };

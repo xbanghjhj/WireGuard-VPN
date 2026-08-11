@@ -1,64 +1,52 @@
-require('dotenv').config();
 const express = require('express');
 const http = require('http');
 const cors = require('cors');
+const helmet = require('helmet');
 const { Server } = require('socket.io');
-
+const { env } = require('./config/env');
+const db = require('./db/database');
 const authRoutes = require('./routes/auth');
 const peersRoutes = require('./routes/peers');
 const statsRoutes = require('./routes/stats');
+const { apiRateLimiter } = require('./middleware/rateLimiters');
+const { notFound, errorHandler } = require('./middleware/errorHandler');
 const { initBandwidthSocket } = require('./websocket/bandwidthSocket');
 
-const app = express();
-const port = process.env.PORT || 3000;
+function createApp() {
+  const app = express();
+  app.disable('x-powered-by');
+  app.use(helmet());
+  app.use(cors({ origin: env.CORS_ORIGIN, methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'], allowedHeaders: ['Content-Type', 'Authorization'] }));
+  app.use(express.json({ limit: '64kb' }));
+  app.use('/api', apiRateLimiter);
+  app.use('/api/auth', authRoutes);
+  app.use('/api/peers', peersRoutes);
+  app.use('/api/stats', statsRoutes);
+  app.get('/health', (req, res) => res.json({ status: 'UP', timestamp: new Date().toISOString(), mockMode: env.MOCK_WIREGUARD }));
+  app.use(notFound);
+  app.use(errorHandler);
+  return app;
+}
 
-// Cấu hình Middleware
-app.use(cors({
-  origin: '*', // Cho phép mọi origin phục vụ mục đích phát triển local
-  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization']
-}));
-app.use(express.json());
+function createServer() {
+  const app = createApp();
+  const server = http.createServer(app);
+  const io = new Server(server, { cors: { origin: env.CORS_ORIGIN, methods: ['GET', 'POST'] } });
+  initBandwidthSocket(io);
+  return { app, server, io };
+}
 
-// Khởi tạo HTTP Server
-const server = http.createServer(app);
-
-// Khởi tạo Socket.IO Server
-const io = new Server(server, {
-  cors: {
-    origin: '*',
-    methods: ['GET', 'POST']
-  }
-});
-
-// Liên kết WebSocket handler
-initBandwidthSocket(io);
-
-// Đăng ký API Routes
-app.use('/api/auth', authRoutes);
-app.use('/api/peers', peersRoutes);
-app.use('/api/stats', statsRoutes);
-
-// Trạng thái Health Check cơ bản
-app.get('/health', (req, res) => {
-  res.status(200).json({
-    status: 'UP',
-    timestamp: new Date().toISOString(),
-    mockMode: process.env.MOCK_WIREGUARD === 'true'
+async function start() {
+  await db.ready;
+  const { server } = createServer();
+  server.listen(env.PORT, () => {
+    console.log(`WireGuard Controller listening on port ${env.PORT} (${env.MOCK_WIREGUARD ? 'MOCK - configs are not usable' : 'REAL'})`);
   });
-});
+  return server;
+}
 
-// Xử lý Route không tồn tại
-app.use((req, res) => {
-  res.status(404).json({ message: 'API Endpoint not found.' });
-});
+if (require.main === module) {
+  start().catch((error) => { console.error(`Startup failed: ${error.message}`); process.exitCode = 1; });
+}
 
-// Khởi động server lắng nghe
-server.listen(port, () => {
-  console.log(`=================================================`);
-  console.log(` WireGuard Controller Backend Server is running`);
-  console.log(` Port: ${port}`);
-  console.log(` Mode: ${process.env.NODE_ENV}`);
-  console.log(` WireGuard Mock: ${process.env.MOCK_WIREGUARD === 'true' ? 'ENABLED 🛠️' : 'DISABLED 🛡️'}`);
-  console.log(`=================================================`);
-});
+module.exports = { createApp, createServer, start };
