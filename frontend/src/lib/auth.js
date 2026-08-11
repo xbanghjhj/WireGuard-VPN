@@ -40,7 +40,7 @@ export function getUser() {
     const userStr = localStorage.getItem('vpn_user');
     try {
       return userStr ? JSON.parse(userStr) : null;
-    } catch (e) {
+    } catch {
       return null;
     }
   }

@@ -3,9 +3,9 @@
 import { useEffect, useState, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { 
-  Shield, Activity, Wifi, WifiOff, Trash2, Key, Cpu, 
+  Shield, Activity, Trash2, Key, Cpu,
   Server, Plus, Search, LogOut, Download, QrCode, 
-  RefreshCw, Clock, ArrowUpRight, ArrowDownLeft 
+  Clock, ArrowUpRight, ArrowDownLeft
 } from 'lucide-react';
 
 import { getUser, clearSession, isAuthenticated } from '../../lib/auth';
@@ -125,7 +125,7 @@ export default function Dashboard() {
       if (diffHr < 24) return `${diffHr} giờ trước`;
       
       return past.toLocaleDateString();
-    } catch (e) {
+    } catch {
       return 'Không xác định';
     }
   };
